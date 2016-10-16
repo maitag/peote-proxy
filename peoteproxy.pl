@@ -16,7 +16,7 @@ use POE qw( Wheel::ReadWrite Wheel::SocketFactory Filter::Stream );
 use Protocol::WebSocket::Handshake::Server;
 use Protocol::WebSocket::Frame;
 use English '-no_match_vars';
-# use Data::Dumper;
+use Data::Dumper;
 
 delete @ENV{qw(IFS CDPATH ENV BASH_ENV PATH)};	 # Make %ENV safer
 #$ENV{PATH}='/bin:/sbin:/usr/bin:/usr/sbin';
@@ -79,7 +79,8 @@ my $config = {
 my $config_struct = {
 	'address'=>'(DOMAIN|IP)', # ACHTUNG, war vorher nur auf IP (checken falls auf bestimmten plattformen sonst nicht geht!)
 	'port'=>'(NUMBER)',
-	'forward_address'=>'(DOMAIN|IP)', # ACHTUNG, evtl. nur auf IP
+	'allowed_forwards'=>'(ADRESSES)', # comma separated list of allowed forward adresses
+	#'forward_address'=>'(DOMAIN|IP)', # obsolete
 	'forward_port'=>'(NUMBER)',
 	'flash_policy_domain'=>'(DOMAIN|IP)',
 	'flash_policy_port'=>'(NUMBER)',
@@ -277,7 +278,6 @@ sub forwarder_create #fold00
 			_stop        => \&forwarder_stop,
 			
 			client_handshake   => \&forwarder_client_handshake   ,# check Clients socket bridge
-			client_connect     => \&forwarder_client_connect,     # wait for connecting to forward-server
 			client_redirect    => \&forwarder_client_redirect,    # Client sent something
 			client_redirect_ws => \&forwarder_client_redirect_ws, # Client sent something over websockets
 			
@@ -308,7 +308,8 @@ sub forwarder_start { #fold00
 	log_("[$heap->{log}] Accepted connection from $peer_host:$peer_port\n");
 
 	$heap->{state} = 'handshake';
-	$heap->{pending}= '';
+	$heap->{pending} = '';
+	$heap->{pending_ws} = '';
 	$heap->{is_websocket} = 0;
 	
 	$heap->{wheel_client} = POE::Wheel::ReadWrite->new(
@@ -332,8 +333,8 @@ sub forwarder_stop { #fold00
 ######################################################################################
 
 sub forwarder_client_handshake { #fold00
-	my ( $heap, $input ) = @_[ HEAP, ARG0 ];
-	#print "input: $input\n";
+	#my ( $heap, $input ) = @_[ HEAP, ARG0 ];
+	my ( $kernel, $session, $heap, $input ) = @_[ KERNEL, SESSION, HEAP, ARG0 ];	
 	
 	$heap->{pending} .= $input;
 	
@@ -355,7 +356,7 @@ sub forwarder_client_handshake { #fold00
 		else
 		{
 			print "no handshake\n";
-			shake_back($heap, '');
+			$heap->{state} = 'wait4ip';
 		}
 	}
 	
@@ -373,8 +374,8 @@ sub forwarder_client_handshake { #fold00
 			$policy .= '</cross-domain-policy>';
 			$policy .= pack("b",0);
 			log_("[$heap->{log}] Flash client from $heap->{peer_host}:$heap->{peer_port} gets his policy\n");
-			
-			shake_back($heap, $policy);
+			exists ( $heap->{wheel_client} ) and $heap->{wheel_client}->put($policy);
+			$heap->{state} = 'wait4ip';
 		}
 	}
 	elsif ( $heap->{state} eq 'handshake-websocket' )
@@ -385,62 +386,88 @@ sub forwarder_client_handshake { #fold00
 		if ($heap->{ws_handshake}->is_done)
 		{
 			$heap->{is_websocket} = 1;
-			shake_back($heap, $heap->{ws_handshake}->to_string);
+			exists ( $heap->{wheel_client} ) and $heap->{wheel_client}->put($heap->{ws_handshake}->to_string);
+			$heap->{state} = 'wait4ip';
 		}
 
 	}
 	
-
-}
-# gives handshake back or goes directly throught
-sub shake_back {
-	my (  $heap, $big_red_hand ) = @_;
-	print "shake back $big_red_hand to webbrowsers\n";
+	##########################################
+	my $wanna_adress;
+	my $wanna_port;   
 	
-	# start connection to forward server
-	$heap->{wheel_server} = POE::Wheel::SocketFactory->new(
-		RemoteAddress => $heap->{remote_addr},
-		RemotePort    => $heap->{remote_port},
-		SuccessEvent  => 'server_connect',
-		FailureEvent  => 'server_error',
-	);
-	
-	exists ( $heap->{wheel_client} ) and $heap->{wheel_client}->event(InputEvent => 'client_connect');
-	
-	if ($big_red_hand ne '') {
-		exists ( $heap->{wheel_client} ) and $heap->{wheel_client}->put($big_red_hand);
-	}
-}
-######################################################################################
-
-sub forwarder_client_connect { #fold00
-	my ( $heap, $input ) = @_[ HEAP, ARG0 ];
-	if ( $heap->{state} eq 'conected')
+	if ( $heap->{state} eq 'wait4ip' )
 	{
-		exists ( $heap->{wheel_server} ) and $heap->{wheel_server}->put($heap->{pending}.$input);
-		if (exists( $heap->{wheel_client} ))
+		my $bytesCSL = ''; foreach my $c (unpack( 'C*', $heap->{pending} )) { $bytesCSL .= sprintf( "%lu", $c )." "; }
+		print "waiting for ip >$bytesCSL\n";
+		
+		if ($heap->{is_websocket})
 		{
-			if ($heap->{is_websocket}) {
-				$heap->{wheel_client}->event(InputEvent => 'client_redirect_ws');
-				print "redirect to websocket";
+			$heap->{ws_frame}->append($heap->{pending});
+			while (my $message = $heap->{ws_frame}->next_bytes)
+			{
+				$heap->{pending_ws}.=$message;
 			}
-			else {
-				$heap->{wheel_client}->event(InputEvent => 'client_redirect');
-				print "redirect pure";
+			
+			if (!defined($heap->{'ip_length'}) && length($heap->{pending_ws})>=2) {
+				($heap->{'ip_length'}, $heap->{pending_ws}) = unpack("S1 a*" ,$heap->{pending_ws});
+				if ($heap->{'ip_length'}<5 || $heap->{'ip_length'}>100) {delete $heap->{wheel_client};return;}
+			}						
+			if (defined($heap->{'ip_length'}) && length($heap->{pending_ws})>=2+$heap->{'ip_length'})
+			{
+				($wanna_adress, $heap->{pending_ws}) = unpack("a".$heap->{'ip_length'}." a*", $heap->{pending_ws}); # domain/ip string abziehen
+				($wanna_port,   $heap->{pending_ws}) = unpack("S1 a*", $heap->{pending_ws}); # uint16 fuer port abziehen
+				$heap->{state} = 'forward';
 			}
 		}
-		delete $heap->{pending};
+		else
+		{
+			if (!defined($heap->{'ip_length'}) && length($heap->{pending})>=2) {
+				($heap->{'ip_length'}, $heap->{pending}) = unpack("S1 a*" ,$heap->{pending});
+				if ($heap->{'ip_length'}<5 || $heap->{'ip_length'}>100) {delete $heap->{wheel_client};return;}
+			}						
+			if (defined($heap->{'ip_length'}) && length($heap->{pending})>=2+$heap->{'ip_length'})
+			{
+				($wanna_adress, $heap->{pending}) = unpack("a".$heap->{'ip_length'}." a*", $heap->{pending}); # domain/ip string abziehen
+				($wanna_port,   $heap->{pending}) = unpack("S1 a*", $heap->{pending}); # uint16 fuer port abziehen
+				$heap->{state} = 'forward';
+			}
+		}
 	}
-	else
+	
+	##########################################
+	
+	if ( $heap->{state} eq 'forward' )
 	{
-		$heap->{pending} .= $input;		
+		delete $heap->{'ip_length'};
+		print "WANNA connect TO:'$wanna_adress:$wanna_port'\n";
+		if ($wanna_port<1 || !defined($config->{'allowed_forwards'}->{$wanna_adress.':'.$wanna_port}) )
+		{
+			print "TODO: logg unauth access try\n";
+			delete $heap->{wheel_client};
+			return;
+		}
+		
+		$heap->{state} = 'connecting';		
+		# start connection to forward server
+		$heap->{wheel_server} = POE::Wheel::SocketFactory->new(
+			#RemoteAddress => $heap->{remote_addr},
+			#RemotePort    => $heap->{remote_port},
+			RemoteAddress => $wanna_adress,
+			RemotePort    => $wanna_port,
+			SuccessEvent  => 'server_connect',
+			FailureEvent  => 'server_error',
+		);
 	}
+	
+
 }
 
 ######################################################################################
 
 sub forwarder_client_redirect { #fold00
 	my ( $heap, $input ) = @_[ HEAP, ARG0 ];
+	print "forwarder_client_redirect "; my $bytesCSL = ''; foreach my $c (unpack( 'C*', $input )) { $bytesCSL .= sprintf( "%lu", $c )." "; } print ">$bytesCSL\n";
 	exists ( $heap->{wheel_server} ) and $heap->{wheel_server}->put($input);
 }
 
@@ -448,19 +475,16 @@ sub forwarder_client_redirect { #fold00
 
 sub forwarder_client_redirect_ws { #fold00
 	my ( $heap, $input ) = @_[ HEAP, ARG0 ];
-	
-	print "from browsers websocket\n";
 	    
 	$heap->{ws_frame}->append($input);
-
-        while (my $message = $heap->{ws_frame}->next_bytes)
+	while (my $message = $heap->{ws_frame}->next_bytes)
         {
-		my $bytesCSL = ''; foreach my $c (unpack( 'C*', $message )) { $bytesCSL .= sprintf( "%lu", $c )." "; }
-		print "websocket message: $bytesCSL\n";
-		
-		exists ( $heap->{wheel_server} ) and $heap->{wheel_server}->put($heap->{ws_frame}->new($message)->to_bytes);
-                
+        	#exists ( $heap->{wheel_server} ) and $heap->{wheel_server}->put(Protocol::WebSocket::Frame->new($message)->to_bytes);
+		#exists ( $heap->{wheel_server} ) and $heap->{wheel_server}->put(Protocol::WebSocket::Frame->new(buffer => $message, type => 'binary')->to_bytes);  
+		print "forwarder_client_redirect_ws "; my $bytesCSL = ''; foreach my $c (unpack( 'C*', $message )) { $bytesCSL .= sprintf( "%lu", $c )." "; } print ">$bytesCSL\n";
+		exists ( $heap->{wheel_server} ) and $heap->{wheel_server}->put($message);              
 	}
+
 }
 
 ######################################################################################
@@ -482,13 +506,52 @@ sub forwarder_server_connect { #fold00
 		ErrorEvent => 'server_error',
 	);
 
-	$heap->{state} = 'conected';
+	$heap->{state} = 'connected';
+	##########################################
+	
+	if ($heap->{is_websocket})
+	{
+		$heap->{ws_frame}->append($heap->{pending});
+		while (my $message = $heap->{ws_frame}->next_bytes)
+		{
+			$heap->{pending_ws}.=$message;
+		}
+	}
+	if (exists( $heap->{wheel_client} ))
+	{
+		print " --- connected\n";
+
+		if ($heap->{is_websocket})
+		{
+			my $bytesCSL = ''; foreach my $c (unpack( 'C*', $heap->{pending_ws} )) { $bytesCSL .= sprintf( "%lu", $c )." "; }
+			print " --- connecting - pend: '$bytesCSL'\n";
+	
+			#if (length($heap->{pending}) > 0) { $kernel->post( $session, 'client_redirect_ws', $heap->{pending} ); }
+			if ($heap->{pending_ws} ne '') { exists ( $heap->{wheel_server} ) and $heap->{wheel_server}->put($heap->{pending_ws});}
+			$heap->{wheel_client}->event(InputEvent => 'client_redirect_ws');
+			print "redirect to websocket\n---------------------------\n";
+			delete $heap->{pending_ws};
+		}
+		else
+		{
+			my $bytesCSL = ''; foreach my $c (unpack( 'C*', $heap->{pending} )) { $bytesCSL .= sprintf( "%lu", $c )." "; }
+			print " --- connecting - pend: '$bytesCSL'\n";
+	
+			#if ($heap->{pending} ne '') { $kernel->post( $session, 'client_redirect', $heap->{pending} ); }
+			if ($heap->{pending} ne '') { exists ( $heap->{wheel_server} ) and $heap->{wheel_server}->put($heap->{pending});}
+			$heap->{wheel_client}->event(InputEvent => 'client_redirect');
+			print "redirect pure\n--------------------------\n";
+		}
+		delete $heap->{pending};
+	}
+	
 }
 
 ######################################################################################
 
 sub forwarder_server_redirect { #fold00
 	my ( $heap, $input ) = @_[ HEAP, ARG0 ];
+	print "-forwarder_server_redirect "; my $bytesCSL = ''; foreach my $c (unpack( 'C*', $input )) { $bytesCSL .= sprintf( "%lu", $c )." "; } print ">$bytesCSL\n";
 	exists( $heap->{wheel_client} ) and $heap->{wheel_client}->put($input);
 }
 
@@ -496,8 +559,9 @@ sub forwarder_server_redirect { #fold00
 
 sub forwarder_server_redirect_ws { #fold00
 	my ( $heap, $input ) = @_[ HEAP, ARG0 ];
-	print "SERVER REDIRECT TO WEBSOCKETS\n";
-	exists( $heap->{wheel_client} ) and $heap->{wheel_client}->put( $heap->{ws_frame}->new($input)->to_bytes );
+	print "-forwarder_server_redirect_ws "; my $bytesCSL = ''; foreach my $c (unpack( 'C*', $input )) { $bytesCSL .= sprintf( "%lu", $c )." "; } print ">$bytesCSL\n";
+	#exists( $heap->{wheel_client} ) and $heap->{wheel_client}->put( Protocol::WebSocket::Frame->new($input)->to_bytes );
+	exists( $heap->{wheel_client} ) and $heap->{wheel_client}->put( Protocol::WebSocket::Frame->new(buffer => $input, type => 'binary')->to_bytes );
 }
 
 ######################################################################################
@@ -643,6 +707,12 @@ sub read_config_ #fold00
 						{
 							print "Error in config, value for \'$var\' (no valid domain or ip)\n";
 						}
+					}
+					elsif ($config_struct->{$var} eq '(ADRESSES)') # TODO: better checking correct adress:port list
+					{
+						my %adresses = map { $_ => 1 } split(/\s*,\s*/, $wert);
+						$config->{$var} = \%adresses;
+						print "allowed servers to forward to: ".print Dumper( $config->{$var} )."\n";
 					}
 				}
 			}
