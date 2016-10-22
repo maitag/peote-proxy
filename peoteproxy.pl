@@ -54,8 +54,7 @@ my $config = {
 	'address'=>'localhost',
 	'port'=>7680,
 
-	'forward_address'=>'localhost',
-	'forward_port'=>23,
+	'allowed_forwards'=>'localhost:23', # comma separated list of allowed forward adresses
 
 	'flash_policy_domain'=>'localhost',
 	'flash_policy_port'=>23,
@@ -66,9 +65,9 @@ my $config = {
 	'error_logging'=>'on',
 	'access_logging'=>'on',
 
-	'logfile'=>'peoteproxy.log',
-	'error_logfile'=>'peoteproxy_error.log',
-	'access_logfile'=>'peoteproxy_access.log',
+	'logfile'=>'', #'peoteproxy.log',
+	'error_logfile'=>'', #'peoteproxy_error.log',
+	'access_logfile'=>'', #'peoteproxy_access.log',
 	
 	'user'=>'',
 	'daemon'=>'off',
@@ -77,11 +76,9 @@ my $config = {
 };
 # Aufbau der Config und moegliche Werte
 my $config_struct = {
-	'address'=>'(DOMAIN|IP)', # ACHTUNG, war vorher nur auf IP (checken falls auf bestimmten plattformen sonst nicht geht!)
+	'address'=>'(DOMAIN|IP)',
 	'port'=>'(NUMBER)',
 	'allowed_forwards'=>'(ADRESSES)', # comma separated list of allowed forward adresses
-	#'forward_address'=>'(DOMAIN|IP)', # obsolete
-	'forward_port'=>'(NUMBER)',
 	'flash_policy_domain'=>'(DOMAIN|IP)',
 	'flash_policy_port'=>'(NUMBER)',
 	'max_connections_per_ip'=>'(NUMBER)',
@@ -123,6 +120,9 @@ else
 }
 
 my $ipcount = {}; # max. numbers of connections per ip
+
+
+
 my $pid;
 if ($config->{'daemon'} eq 'on')
 {
@@ -145,7 +145,7 @@ if ($config->{'daemon'} eq 'on')
 
 	log_("--------------- daemon started ------------------\n");
 
-	server_create( $config->{'address'}, $config->{'port'}, $config->{'forward_address'}, $config->{'forward_port'} );
+	server_create( $config->{'address'}, $config->{'port'} );
 	$poe_kernel->run_one_timeslice() while not $quit;
 	${$poe_kernel->[POE::Kernel::KR_RUN]} |= POE::Kernel::KR_RUN_CALLED; # damit keine errormsg wegen run-flag 
 
@@ -155,7 +155,7 @@ if ($config->{'daemon'} eq 'on')
 else
 {
 	log_("--------------- started ------------------\n");
-	server_create( $config->{'address'}, $config->{'port'}, $config->{'forward_address'}, $config->{'forward_port'} );
+	server_create( $config->{'address'}, $config->{'port'} );
 	POE::Kernel->run();
 }
 
@@ -168,7 +168,7 @@ exit(0);
 ######################################################################################
 sub server_create #fold00
 {
-	my ( $local_address, $local_port, $remote_address, $remote_port ) = @_;
+	my ( $local_address, $local_port ) = @_;
 
 	POE::Session->create(
 		inline_states => {
@@ -178,7 +178,7 @@ sub server_create #fold00
 			accept_failure => \&server_accept_failure,
 		},
 		#		  ARG0,			   ARG1,		ARG2,			 ARG3
-		args => [ $local_address, $local_port, $remote_address, $remote_port ]
+		args => [ $local_address, $local_port ]
 	);
 }
 
@@ -186,14 +186,12 @@ sub server_create #fold00
 
 sub server_start #fold00
 {
-	my ( $heap, $local_addr, $local_port, $remote_addr, $remote_port ) = @_[ HEAP, ARG0, ARG1, ARG2, ARG3 ];
+	my ( $heap, $local_addr, $local_port ) = @_[ HEAP, ARG0, ARG1, ARG2, ARG3 ];
 
-	log_("+ Redirecting $local_addr:$local_port to $remote_addr:$remote_port\n");
+	log_("+ Redirecting $local_addr:$local_port\n");
 	
 	$heap->{local_addr}  = $local_addr;
 	$heap->{local_port}  = $local_port;
-	$heap->{remote_addr} = $remote_addr;
-	$heap->{remote_port} = $remote_port;
 	
 	# originale (root) user id setzen (wenn als root gestartet)
 	my $tmpeui;
@@ -223,8 +221,7 @@ sub server_start #fold00
 sub server_stop	 #fold00
 {
 	my $heap = $_[HEAP];
-	log_("- Redirection from $heap->{local_addr}:$heap->{local_port}".
-	     " to $heap->{remote_addr}:$heap->{remote_port} has stopped.\n");
+	log_("- Redirection from $heap->{local_addr}:$heap->{local_port} stopped.\n");
 }
 
 ######################################################################################
@@ -233,26 +230,19 @@ sub server_accept_success  #fold00
 {
 	my ( $heap, $socket, $peer_host, $peer_port ) = @_[ HEAP, ARG0, ARG1, ARG2 ];
 	
-	$peer_host = inet_ntoa($peer_host);
-	
-	# ip dem hash hinzufuegen (port ist key)
-	$ipcount->{$peer_port} = $peer_host;
-	
 	my $anz_connections_per_ip = 0;
-	foreach my $key (keys %{$ipcount})
-	{	$anz_connections_per_ip++ if ($ipcount->{$key} eq $peer_host);
-	}
-
+	$peer_host = inet_ntoa($peer_host);
+	$ipcount->{$peer_port} = $peer_host; # stores number of connections from one IP
+	foreach my $key (keys %{$ipcount}) { $anz_connections_per_ip++ if ($ipcount->{$key} eq $peer_host); }
+	
 	if ($anz_connections_per_ip <= $config->{'max_connections_per_ip'})
 	{
-		&forwarder_create( $socket, $peer_host, $peer_port, $heap->{remote_addr}, $heap->{remote_port});
+		&forwarder_create( $socket, $peer_host, $peer_port);
 	}
 	else
-	{	log_("Connection by $peer_host closed ($anz_connections_per_ip mal verbunden,".
-		     " $config->{'max_connections_per_ip'} allowed) \n");
+	{	log_("    Connection by $peer_host closed ($config->{'max_connections_per_ip'} allowed) \n",'ACCESS');
 		delete($ipcount->{$peer_port});
 	}
-	
 }
 
 ######################################################################################
@@ -261,8 +251,7 @@ sub server_accept_failure  #fold00
 {
 	my ( $heap, $operation, $errnum, $errstr ) = @_[ HEAP, ARG0, ARG1, ARG2 ];
 	log_("! Redirection from $heap->{local_addr}:$heap->{local_port}".
-	     " to $heap->{remote_addr}:$heap->{remote_port}".
-	     " encountered $operation error $errnum: $errstr\n");
+	     " encountered $operation error $errnum: $errstr\n",'ERROR');
 	delete $heap->{server_wheel} if $errnum == ENFILE or $errnum == EMFILE;
 }
 
@@ -270,7 +259,7 @@ sub server_accept_failure  #fold00
 
 sub forwarder_create #fold00
 {
-	my ( $handle, $peer_host, $peer_port, $remote_addr, $remote_port ) = @_;
+	my ( $handle, $peer_host, $peer_port ) = @_;
 
 	POE::Session->create(
 		inline_states => {
@@ -281,6 +270,8 @@ sub forwarder_create #fold00
 			client_redirect    => \&forwarder_client_redirect,    # Client sent something
 			client_redirect_ws => \&forwarder_client_redirect_ws, # Client sent something over websockets
 			
+			client_check_login_timeout => \&client_check_login_timeout, # timeout after login
+
 			server_connect     => \&forwarder_server_connect,     # Connected to server.
 			server_redirect    => \&forwarder_server_redirect,    # Server sent something.
 			server_redirect_ws => \&forwarder_server_redirect_ws, # Server sent something over websockets
@@ -289,24 +280,22 @@ sub forwarder_create #fold00
 			client_error   => \&forwarder_client_error,  # Error on client socket.
 		},
 		#         ARG0,	   ARG1,       ARG2,       ARG3,         ARG4
-		args => [ $handle, $peer_host, $peer_port, $remote_addr, $remote_port ]
+		args => [ $handle, $peer_host, $peer_port ]
 	);
 }
 
 ######################################################################################
 
 sub forwarder_start { #fold00
-	my ( $heap, $session, $socket, $peer_host, $peer_port, $remote_addr, $remote_port )
-	    = @_[ HEAP, SESSION, ARG0, ARG1, ARG2, ARG3, ARG4 ];
+	my ( $heap, $session, $kernel, $socket, $peer_host, $peer_port )
+	    = @_[ HEAP, SESSION, KERNEL, ARG0, ARG1, ARG2, ARG3, ARG4 ];
 
 	$heap->{log}         = $session->ID;
 	$heap->{peer_host}   = $peer_host;
 	$heap->{peer_port}   = $peer_port;
-	$heap->{remote_addr} = $remote_addr;
-	$heap->{remote_port} = $remote_port;
-
-	log_("[$heap->{log}] Accepted connection from $peer_host:$peer_port\n");
-
+	
+	log_("[$heap->{log}] Accepted connection from $peer_host:$peer_port\n",'ACCESS');
+	
 	$heap->{state} = 'handshake';
 	$heap->{pending} = '';
 	$heap->{pending_ws} = '';
@@ -319,16 +308,11 @@ sub forwarder_start { #fold00
 		InputEvent => 'client_handshake',
 		ErrorEvent => 'client_error',
 	);
-
+	
+	# timeout
+	$kernel->delay( client_check_login_timeout => 5 );
 }
 
-######################################################################################
-
-sub forwarder_stop { #fold00
-	my $heap = $_[HEAP];
-	delete($ipcount->{$heap->{peer_port}});
-	log_("[$heap->{log}] Closing redirection session from $heap->{peer_host}:$heap->{peer_port}\n");
-}
 
 ######################################################################################
 
@@ -343,19 +327,19 @@ sub forwarder_client_handshake { #fold00
 		# check first incomming byte to see whats may going on ;)
 		if ($input =~ /^</)
 		{
-			print "waiting for full flash policy request\n";
+			$config->{debug} && print "waiting for full flash policy request\n";
 			$heap->{state} = 'handshake-flash';
 		}
 		elsif ($input =~ /^G/)
 		{
-			print "waiting for full websocket handshake\n";
+			$config->{debug} && print "waiting for full websocket handshake\n";
 			$heap->{ws_handshake} = Protocol::WebSocket::Handshake::Server->new;
 			$heap->{ws_frame}     = Protocol::WebSocket::Frame->new;
 			$heap->{state} = 'handshake-websocket';
 		}
 		else
 		{
-			print "no handshake\n";
+			$config->{debug} && print "no handshake\n";
 			$heap->{state} = 'wait4ip';
 		}
 	}
@@ -373,7 +357,7 @@ sub forwarder_client_handshake { #fold00
 			$policy .= '<allow-access-from domain="'.$config->{'flash_policy_domain'}.'" to-ports="'.$config->{'flash_policy_port'}.'" />';
 			$policy .= '</cross-domain-policy>';
 			$policy .= pack("b",0);
-			log_("[$heap->{log}] Flash client from $heap->{peer_host}:$heap->{peer_port} gets his policy\n");
+			log_("[$heap->{log}] Client $heap->{peer_host}:$heap->{peer_port} gets flash policy\n",'ACCESS');
 			exists ( $heap->{wheel_client} ) and $heap->{wheel_client}->put($policy);
 			$heap->{state} = 'wait4ip';
 		}
@@ -381,7 +365,7 @@ sub forwarder_client_handshake { #fold00
 	elsif ( $heap->{state} eq 'handshake-websocket' )
 	{
 		$heap->{ws_handshake}->parse($heap->{pending});
-		print "pending after parse out for websocket: '".$heap->{pending}."'\n";
+		$config->{debug} && print "pending after parse out for websocket: '".$heap->{pending}."'\n";
 		
 		if ($heap->{ws_handshake}->is_done)
 		{
@@ -398,8 +382,8 @@ sub forwarder_client_handshake { #fold00
 	
 	if ( $heap->{state} eq 'wait4ip' )
 	{
-		my $bytesCSL = ''; foreach my $c (unpack( 'C*', $heap->{pending} )) { $bytesCSL .= sprintf( "%lu", $c )." "; }
-		print "waiting for ip >$bytesCSL\n";
+		#my $bytesCSL = ''; foreach my $c (unpack( 'C*', $heap->{pending} )) { $bytesCSL .= sprintf( "%lu", $c )." "; }
+		#print "waiting for ip >$bytesCSL\n";
 		
 		if ($heap->{is_websocket})
 		{
@@ -440,19 +424,18 @@ sub forwarder_client_handshake { #fold00
 	if ( $heap->{state} eq 'forward' )
 	{
 		delete $heap->{'ip_length'};
-		print "WANNA connect TO:'$wanna_adress:$wanna_port'\n";
+		
 		if ($wanna_port<1 || !defined($config->{'allowed_forwards'}->{$wanna_adress.':'.$wanna_port}) )
 		{
-			print "TODO: logg unauth access try\n";
+			log_("[$heap->{log}] Server adress send by client not in allowed\n",'ACCESS'); # TODO: block IP
 			delete $heap->{wheel_client};
 			return;
 		}
 		
 		$heap->{state} = 'connecting';		
+		$heap->{remote_addr} = $wanna_adress.":".$wanna_port;
 		# start connection to forward server
 		$heap->{wheel_server} = POE::Wheel::SocketFactory->new(
-			#RemoteAddress => $heap->{remote_addr},
-			#RemotePort    => $heap->{remote_port},
 			RemoteAddress => $wanna_adress,
 			RemotePort    => $wanna_port,
 			SuccessEvent  => 'server_connect',
@@ -467,7 +450,7 @@ sub forwarder_client_handshake { #fold00
 
 sub forwarder_client_redirect { #fold00
 	my ( $heap, $input ) = @_[ HEAP, ARG0 ];
-	print "forwarder_client_redirect "; my $bytesCSL = ''; foreach my $c (unpack( 'C*', $input )) { $bytesCSL .= sprintf( "%lu", $c )." "; } print ">$bytesCSL\n";
+	#print "forwarder_client_redirect "; my $bytesCSL = ''; foreach my $c (unpack( 'C*', $input )) { $bytesCSL .= sprintf( "%lu", $c )." "; } print ">$bytesCSL\n";
 	exists ( $heap->{wheel_server} ) and $heap->{wheel_server}->put($input);
 }
 
@@ -479,9 +462,7 @@ sub forwarder_client_redirect_ws { #fold00
 	$heap->{ws_frame}->append($input);
 	while (my $message = $heap->{ws_frame}->next_bytes)
         {
-        	#exists ( $heap->{wheel_server} ) and $heap->{wheel_server}->put(Protocol::WebSocket::Frame->new($message)->to_bytes);
-		#exists ( $heap->{wheel_server} ) and $heap->{wheel_server}->put(Protocol::WebSocket::Frame->new(buffer => $message, type => 'binary')->to_bytes);  
-		print "forwarder_client_redirect_ws "; my $bytesCSL = ''; foreach my $c (unpack( 'C*', $message )) { $bytesCSL .= sprintf( "%lu", $c )." "; } print ">$bytesCSL\n";
+		#print "forwarder_client_redirect_ws "; my $bytesCSL = ''; foreach my $c (unpack( 'C*', $message )) { $bytesCSL .= sprintf( "%lu", $c )." "; } print ">$bytesCSL\n";
 		exists ( $heap->{wheel_server} ) and $heap->{wheel_server}->put($message);              
 	}
 
@@ -492,22 +473,7 @@ sub forwarder_client_redirect_ws { #fold00
 sub forwarder_server_connect { #fold00
 	my ( $kernel, $session, $heap, $socket ) = @_[ KERNEL, SESSION, HEAP, ARG0 ];
 
-	my ( $local_port, $local_addr ) = unpack_sockaddr_in( getsockname($socket) );
-	$local_addr = inet_ntoa($local_addr);
-	log_("[$heap->{log}] Established forward from local $local_addr:$local_port to remote $heap->{remote_addr}:$heap->{remote_port} \n");
-
-	# Replace the SocketFactory wheel with a ReadWrite wheel.
-
-	$heap->{wheel_server} = POE::Wheel::ReadWrite->new(
-		Handle	   => $socket,
-		Driver	   => POE::Driver::SysRW->new,
-		Filter	   => POE::Filter::Stream->new,
-		InputEvent => ($heap->{is_websocket}) ? 'server_redirect_ws' : 'server_redirect',
-		ErrorEvent => 'server_error',
-	);
-
 	$heap->{state} = 'connected';
-	##########################################
 	
 	if ($heap->{is_websocket})
 	{
@@ -517,41 +483,73 @@ sub forwarder_server_connect { #fold00
 			$heap->{pending_ws}.=$message;
 		}
 	}
+	
 	if (exists( $heap->{wheel_client} ))
 	{
-		print " --- connected\n";
-
 		if ($heap->{is_websocket})
 		{
-			my $bytesCSL = ''; foreach my $c (unpack( 'C*', $heap->{pending_ws} )) { $bytesCSL .= sprintf( "%lu", $c )." "; }
-			print " --- connecting - pend: '$bytesCSL'\n";
+			#my $bytesCSL = ''; foreach my $c (unpack( 'C*', $heap->{pending_ws} )) { $bytesCSL .= sprintf( "%lu", $c )." "; }
+			#print " --- connecting - pend: '$bytesCSL'\n";
 	
 			#if (length($heap->{pending}) > 0) { $kernel->post( $session, 'client_redirect_ws', $heap->{pending} ); }
 			if ($heap->{pending_ws} ne '') { exists ( $heap->{wheel_server} ) and $heap->{wheel_server}->put($heap->{pending_ws});}
 			$heap->{wheel_client}->event(InputEvent => 'client_redirect_ws');
-			print "redirect to websocket\n---------------------------\n";
+			#print "redirect to websocket\n---------------------------\n";
 			delete $heap->{pending_ws};
 		}
 		else
 		{
-			my $bytesCSL = ''; foreach my $c (unpack( 'C*', $heap->{pending} )) { $bytesCSL .= sprintf( "%lu", $c )." "; }
-			print " --- connecting - pend: '$bytesCSL'\n";
+			#my $bytesCSL = ''; foreach my $c (unpack( 'C*', $heap->{pending} )) { $bytesCSL .= sprintf( "%lu", $c )." "; }
+			#print " --- connecting - pend: '$bytesCSL'\n";
 	
 			#if ($heap->{pending} ne '') { $kernel->post( $session, 'client_redirect', $heap->{pending} ); }
 			if ($heap->{pending} ne '') { exists ( $heap->{wheel_server} ) and $heap->{wheel_server}->put($heap->{pending});}
 			$heap->{wheel_client}->event(InputEvent => 'client_redirect');
-			print "redirect pure\n--------------------------\n";
+			#print "redirect pure\n--------------------------\n";
 		}
+		
 		delete $heap->{pending};
+		
+		$heap->{wheel_server} = POE::Wheel::ReadWrite->new(
+			Handle	   => $socket,
+			Driver	   => POE::Driver::SysRW->new,
+			Filter	   => POE::Filter::Stream->new,
+			InputEvent => ($heap->{is_websocket}) ? 'server_redirect_ws' : 'server_redirect',
+			ErrorEvent => 'server_error',
+		);
+		
+		my ( $local_port, $local_addr ) = unpack_sockaddr_in( getsockname($socket) );
+		$local_addr = inet_ntoa($local_addr);
+		$heap->{client_addr} = "$local_addr:$local_port";
+		
+		log_("[$heap->{log}] Start forwarding $heap->{client_addr} to $heap->{remote_addr} ".
+		     (($heap->{is_websocket}) ? '(websocket)' : '')."\n");
+		$heap->{state} = 'established';
+		$kernel->delay( client_check_login_timeout => undef );
 	}
 	
+}
+######################################################################################
+
+sub forwarder_stop { #fold00
+	my $heap = $_[HEAP];
+	delete($ipcount->{$heap->{peer_port}});
+	
+	if ($heap->{state} eq 'established')
+	{
+		log_("[$heap->{log}] Stop  forwarding $heap->{client_addr} to $heap->{remote_addr}\n");
+	}
+	else
+	{
+		log_("[$heap->{log}] Closing redirection session from $heap->{peer_host}:$heap->{peer_port}\n",'ACCESS');
+	}
 }
 
 ######################################################################################
 
 sub forwarder_server_redirect { #fold00
 	my ( $heap, $input ) = @_[ HEAP, ARG0 ];
-	print "-forwarder_server_redirect "; my $bytesCSL = ''; foreach my $c (unpack( 'C*', $input )) { $bytesCSL .= sprintf( "%lu", $c )." "; } print ">$bytesCSL\n";
+	#print "-forwarder_server_redirect "; my $bytesCSL = ''; foreach my $c (unpack( 'C*', $input )) { $bytesCSL .= sprintf( "%lu", $c )." "; } print ">$bytesCSL\n";
 	exists( $heap->{wheel_client} ) and $heap->{wheel_client}->put($input);
 }
 
@@ -559,8 +557,7 @@ sub forwarder_server_redirect { #fold00
 
 sub forwarder_server_redirect_ws { #fold00
 	my ( $heap, $input ) = @_[ HEAP, ARG0 ];
-	print "-forwarder_server_redirect_ws "; my $bytesCSL = ''; foreach my $c (unpack( 'C*', $input )) { $bytesCSL .= sprintf( "%lu", $c )." "; } print ">$bytesCSL\n";
-	#exists( $heap->{wheel_client} ) and $heap->{wheel_client}->put( Protocol::WebSocket::Frame->new($input)->to_bytes );
+	#print "-forwarder_server_redirect_ws "; my $bytesCSL = ''; foreach my $c (unpack( 'C*', $input )) { $bytesCSL .= sprintf( "%lu", $c )." "; } print ">$bytesCSL\n";
 	exists( $heap->{wheel_client} ) and $heap->{wheel_client}->put( Protocol::WebSocket::Frame->new(buffer => $input, type => 'binary')->to_bytes );
 }
 
@@ -570,13 +567,15 @@ sub forwarder_client_error { #fold00
 	my ( $kernel, $heap, $operation, $errnum, $errstr ) =
 	  @_[ KERNEL, HEAP, ARG0, ARG1, ARG2 ];
 
+	defined($heap->{client_addr}) or $heap->{client_addr} = "$heap->{peer_host}:$heap->{peer_port}";
 	if ($errnum) {
-		log_("[$heap->{log}] Client connection encountered $operation error $errnum: $errstr\n");
+		log_("[$heap->{log}] Client $heap->{client_addr} encountered $operation error $errnum: $errstr\n",'ERROR');
 	}
 	else {
-		log_("[$heap->{log}] Client closed connection.\n");
+		log_("[$heap->{log}] Client $heap->{client_addr} close connection.\n",'ACCESS');
 	}
-
+	
+	$kernel->delay( client_check_login_timeout => undef );
 	delete $heap->{wheel_client};
 	delete $heap->{wheel_server};
 }
@@ -585,14 +584,29 @@ sub forwarder_client_error { #fold00
 
 sub forwarder_server_error { #fold00
 	my ( $kernel, $heap, $operation, $errnum, $errstr ) = @_[ KERNEL, HEAP, ARG0, ARG1, ARG2 ];
+	
+	defined($heap->{client_addr}) or $heap->{client_addr} = "$heap->{peer_host}:$heap->{peer_port}";
 	if ($errnum) {
-		log_("[$heap->{log}] Server connection encountered $operation error $errnum: $errstr\n");
+		log_("[$heap->{log}] Server $heap->{remote_addr} to $heap->{client_addr} encountered $operation error $errnum: $errstr\n",'ERROR');
 	}
 	else {
-		log_("[$heap->{log}] Server closed connection.\n");
+		log_("[$heap->{log}] Server $heap->{remote_addr} close connection to $heap->{client_addr}.\n",'ACCESS');
 	}
+	
+	$kernel->delay( client_check_login_timeout => undef );
 	delete $heap->{wheel_client};
 	delete $heap->{wheel_server};
+}
+
+######################################################################################
+sub client_check_login_timeout {
+	my $heap = $_[HEAP];    
+
+	defined($heap->{client_addr}) or $heap->{client_addr} = "$heap->{peer_host}:$heap->{peer_port}";
+	log_("[$heap->{log}] Login-Timeout for $heap->{client_addr}\n");
+
+	delete( $ipcount->{ $heap->{peer_port} } );
+	delete $heap->{wheel_client};
 }
 
 ######################################################################################
@@ -638,13 +652,13 @@ sub read_config_ #fold00
 	{
 		while (<FOU>)
 		{
-			chomp;					# zeilenumbruch
-			s/#.*//;				# kommentare
-			s/^\s+//;				# leerzeichen am anfang
-			s/\s+$//;				# leerzeichen am ende
-			next unless length;		# noch mehr uebrig?
+			chomp;				# linebreak
+			s/#.*//;			# comments
+			s/^\s+//;			# spaces at beginning
+			s/\s+$//;			# leerzeichen am ende
+			next unless length;		# any more
 			my ($var, $wert) = split(/\s*=\s*/, $_, 2);
-			$var = lc($var); # TODO: nur buchstaben usw. zulassen
+			$var = lc($var);
 			$wert = lc($wert);
 			if (defined($config_struct->{$var}))
 			{	
@@ -657,7 +671,7 @@ sub read_config_ #fold00
 					}
 					else
 					{
-						print "Error in config, possible values for \'$var\' = ".join(' | ',@{$config_struct->{$var}})."\n";
+						die "Error in config, possible values for \'$var\' = ".join(' | ',@{$config_struct->{$var}})."\n";
 					}
 				}
 				else
@@ -670,7 +684,7 @@ sub read_config_ #fold00
 						}
 						else
 						{
-							print "Error in config, value for \'$var\' is not a number!\n";
+							die "Error in config, value for \'$var\' is not a number!\n";
 						}
 						
 					}
@@ -682,7 +696,7 @@ sub read_config_ #fold00
 						}
 						else
 						{
-							print "Error in config, value for \'$var\' contains no string!\n";
+							die "Error in config, value for \'$var\' contains no string!\n";
 						}
 						
 					}
@@ -694,31 +708,38 @@ sub read_config_ #fold00
 						}
 						else
 						{
-							print "Error in config, value for \'$var\' is not an IP Adress!\n";
+							die "Error in config, value for \'$var\' is not an IP Adress!\n";
 						}
 					}
 					elsif ($config_struct->{$var} eq '(DOMAIN|IP)')
 					{
-						if ($wert =~ /([\d\w\-\.]+)/) # ACHTUNG, matcht nicht 100% domains bzw. ip
+						if ($wert =~ /^\s*([\w\-\.]+)\s*$/) # not matching 100% domains or ip
 						{
 							$config->{$var} = $1; # untainting;
 						}
 						else
 						{
-							print "Error in config, value for \'$var\' (no valid domain or ip)\n";
+							die "Error in config, value for \'$var\' (no valid domain or ip)\n";
 						}
 					}
-					elsif ($config_struct->{$var} eq '(ADRESSES)') # TODO: better checking correct adress:port list
+					elsif ($config_struct->{$var} eq '(ADRESSES)')
 					{
-						my %adresses = map { $_ => 1 } split(/\s*,\s*/, $wert);
-						$config->{$var} = \%adresses;
-						print "allowed servers to forward to: ".print Dumper( $config->{$var} )."\n";
+						my @adresses = split(/\s*,\s*/, $wert);
+						my @no_valid = grep { $_ !~ /^[\w\-\.]+:\d+$/ }  @adresses;
+						
+						if (@no_valid) {
+							die "Error in config for \'$var\' -> no valid domain:port or ip:port -> \'".join( ', ', @no_valid )."\'\n";							
+						}
+						else {
+							$config->{$var} = {map { $_ => 1 } @adresses};
+							print "Allowed servers to forward: ".join( ', ', @adresses )."\n\n";
+						}
 					}
 				}
 			}
 			else
 			{
-				print "Error in config, unknow param: \'$var\'\n";
+				die "Error in config, unknow param: \'$var\'\n";
 			}
 		}
 	}
@@ -730,47 +751,47 @@ sub read_config_ #fold00
 sub log_ #fold00
 {
 	my ($msg, $typ) = @_;
-	#my $typ;
 	
 	my $logfile = $config->{'logfile'};
 	
 	if ($config->{'logging'} eq 'on')
 	{
-		
-		if (defined($typ))
+		defined($typ) or $typ = ' ';
+		if ($typ eq 'ACCESS')
 		{
-			if ($typ eq 'ACCESS' && $config->{'access_logging'} eq 'on')
-			{
-				$msg = get_time()." ACCESS:\t".$msg;
-				$logfile = $config->{'access_logfile'} if ($config->{'access_logfile'});
+			$config->{'access_logging'} eq 'on' or return;
+			$typ = 'A';
+			if ($config->{'access_logfile'}) {
+				$logfile = $config->{'access_logfile'};
+				$typ = '';
 			}
-			elsif ($typ eq 'ERROR' && $config->{'error_logging'} eq 'on')
-			{
-				$msg = get_time()." ERROR :\t".$msg;
-				$logfile = $config->{'error_logfile'} if ($config->{'error_logfile'});
-			}
-			else
-			{
-				$msg = get_time()." ".$typ.":\t".$msg;
-			}
-			
 		}
-	if ($logfile ne '')
-	{
+		elsif ($typ eq 'ERROR')
+		{
+			$config->{'error_logging'} eq 'on' or return;
+			$typ = 'E';
+			if ($config->{'error_logfile'}) {
+				$logfile = $config->{'error_logfile'};
+				$typ = '';
+			}
+		}			
+		
+		if ($logfile ne '')
+		{
 			if (open(FOU, ">>".$pdir.'/'.$logfile))
 			{
-					print FOU get_time()."	".$msg;
-					close FOU;
+				print FOU get_time()." $typ ".$msg;
+				close FOU;
 			}
 			else
 			{
-				print "cant open logfile $logfile";
+				die "cant open logfile $logfile";
 			}
-	}
-	else
-	{
-		print get_time()."	".$msg;
-	}
+		}
+		else
+		{
+			print get_time()." $typ ".$msg;
+		}
 		
 	}
 	
