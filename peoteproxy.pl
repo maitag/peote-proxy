@@ -13,10 +13,9 @@ use IO::File;
 use POSIX qw(WNOHANG setsid errno_h);
 use Socket;
 use POE qw( Wheel::ReadWrite Wheel::SocketFactory Filter::Stream );
-use Protocol::WebSocket::Handshake::Server;
-use Protocol::WebSocket::Frame;
 use English '-no_match_vars';
 use Data::Dumper;
+use FindBin '$RealBin';
 
 delete @ENV{qw(IFS CDPATH ENV BASH_ENV PATH)};	 # Make %ENV safer
 #$ENV{PATH}='/bin:/sbin:/usr/bin:/usr/sbin';
@@ -24,25 +23,18 @@ delete @ENV{qw(IFS CDPATH ENV BASH_ENV PATH)};	 # Make %ENV safer
 my $pdir;
 
 BEGIN {
-  $pdir=$0;
-  unless(File::Spec->file_name_is_absolute($pdir))
-  {
-	  $pdir=File::Spec->canonpath(File::Spec->catdir($ENV{'PWD'},$pdir));
-	  while ($pdir =~ s/[^\/\.]*\/\.\.\///) {};
-	  if ($^O eq "MSWin32") {while ($pdir =~ s/[^\\\.]*\\\.\.\\//) {};}
-  }
-  # $pdir =~ s/\/[^\/]+\/[^\/]+$//; # ohne filenamen und ein dir hoeher
-  $pdir =~ s/\/[^\/]+$//;	# nur ohne filenamen
-  if ($^O eq "MSWin32") {$pdir =~ s/\\[^\\]+$//;}
-
-  # print "pdir=".$pdir."\n";
-  
-  $pdir =~ /(.*)/; # UNTAINTING !!!
-  $pdir = $1;
+  $pdir = $RealBin;
 }
 
 use constant PID_FILE => "$pdir/peoteproxy.pid";
 use constant CONFIG_FILE => "$pdir/peoteproxy.conf";
+
+use lib $pdir;
+use Protocol::WebSocket::Stateful;
+use Protocol::WebSocket::Message;
+use Protocol::WebSocket::Handshake::Server;
+use Protocol::WebSocket::Frame;
+
 
 chdir("$pdir");
 umask(0);
@@ -95,7 +87,7 @@ my $config_struct = {
 # config einlesen
 $config = read_config_(CONFIG_FILE);
 
-if ($config->{'user'} ne '')
+if ($config->{'user'} ne '' && $^O !~ /win/i)
 {
 	# if process started with root-rights, here is username to let run onto (u only need to start as root for vip ports < .?.)
 	print "euid=".$EUID."\n";
@@ -124,7 +116,7 @@ my $ipcount = {}; # max. numbers of connections per ip
 
 
 my $pid;
-if ($config->{'daemon'} eq 'on')
+if ($config->{'daemon'} eq 'on' && $^O !~ /win/i)
 {
 	my $quit=0;
 	$SIG{CHLD} = sub {while (waitpid(-1,WNOHANG)>0) {} };
@@ -486,12 +478,20 @@ sub forwarder_server_connect { #fold00
 	
 	if (exists( $heap->{wheel_client} ))
 	{
+		$heap->{wheel_server} = POE::Wheel::ReadWrite->new(
+			Handle	   => $socket,
+			Driver	   => POE::Driver::SysRW->new,
+			Filter	   => POE::Filter::Stream->new,
+			InputEvent => ($heap->{is_websocket}) ? 'server_redirect_ws' : 'server_redirect',
+			ErrorEvent => 'server_error',
+		);
+		
 		if ($heap->{is_websocket})
 		{
 			#my $bytesCSL = ''; foreach my $c (unpack( 'C*', $heap->{pending_ws} )) { $bytesCSL .= sprintf( "%lu", $c )." "; }
 			#print " --- connecting - pend: '$bytesCSL'\n";
 	
-			#if (length($heap->{pending}) > 0) { $kernel->post( $session, 'client_redirect_ws', $heap->{pending} ); }
+			#if ($heap->{pending_ws} ne '') { $kernel->post( $session, 'client_redirect_ws', $heap->{pending_ws} ); }
 			if ($heap->{pending_ws} ne '') { exists ( $heap->{wheel_server} ) and $heap->{wheel_server}->put($heap->{pending_ws});}
 			$heap->{wheel_client}->event(InputEvent => 'client_redirect_ws');
 			#print "redirect to websocket\n---------------------------\n";
@@ -509,14 +509,6 @@ sub forwarder_server_connect { #fold00
 		}
 		
 		delete $heap->{pending};
-		
-		$heap->{wheel_server} = POE::Wheel::ReadWrite->new(
-			Handle	   => $socket,
-			Driver	   => POE::Driver::SysRW->new,
-			Filter	   => POE::Filter::Stream->new,
-			InputEvent => ($heap->{is_websocket}) ? 'server_redirect_ws' : 'server_redirect',
-			ErrorEvent => 'server_error',
-		);
 		
 		my ( $local_port, $local_addr ) = unpack_sockaddr_in( getsockname($socket) );
 		$local_addr = inet_ntoa($local_addr);
@@ -613,7 +605,7 @@ sub client_check_login_timeout {
 
 sub check_args_ #fold00
 {
-	if (defined(@ARGV))
+	if (@ARGV)
 	{
 		if ($ARGV[0] =~ m/^stop|restart$/i)
 		{
@@ -828,7 +820,7 @@ sub open_pid_file #fold00
 		print "Please remove old PID-File manually because process with pid $pid doesn\'t exists!\n";
 		unless (-w $f && unlink $f) {die "Can\`t delete PID-File $f !\n";}
 	}
-	return IO::File->new($f,O_WRONLY|O_CREAT|O_EXCL,0644) or die "Cant create $f !\n";
+	return (IO::File->new($f,O_WRONLY|O_CREAT|O_EXCL,0644) or die "Cant create $f !\n");
 }
 
 ######################################################################################
