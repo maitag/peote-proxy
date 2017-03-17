@@ -387,7 +387,7 @@ sub forwarder_client_handshake { #fold00
 			
 			if (!defined($heap->{'ip_length'}) && length($heap->{pending_ws})>=2) {
 				($heap->{'ip_length'}, $heap->{pending_ws}) = unpack("S1 a*" ,$heap->{pending_ws});
-				if ($heap->{'ip_length'}<5 || $heap->{'ip_length'}>100) {delete $heap->{wheel_client};return;}
+				if ($heap->{'ip_length'}<3 || $heap->{'ip_length'}>100) {delete $heap->{wheel_client};return;}
 			}						
 			if (defined($heap->{'ip_length'}) && length($heap->{pending_ws})>=2+$heap->{'ip_length'})
 			{
@@ -400,8 +400,8 @@ sub forwarder_client_handshake { #fold00
 		{
 			if (!defined($heap->{'ip_length'}) && length($heap->{pending})>=2) {
 				($heap->{'ip_length'}, $heap->{pending}) = unpack("S1 a*" ,$heap->{pending});
-				if ($heap->{'ip_length'}<5 || $heap->{'ip_length'}>100) {delete $heap->{wheel_client};return;}
-			}						
+				if ($heap->{'ip_length'}<3 || $heap->{'ip_length'}>100) {delete $heap->{wheel_client};return;}
+			}
 			if (defined($heap->{'ip_length'}) && length($heap->{pending})>=2+$heap->{'ip_length'})
 			{
 				($wanna_adress, $heap->{pending}) = unpack("a".$heap->{'ip_length'}." a*", $heap->{pending}); # domain/ip string abziehen
