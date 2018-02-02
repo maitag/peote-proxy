@@ -434,8 +434,6 @@ sub forwarder_client_handshake { #fold00
 			FailureEvent  => 'server_error',
 		);
 	}
-	
-
 }
 
 ######################################################################################
@@ -450,14 +448,22 @@ sub forwarder_client_redirect { #fold00
 
 sub forwarder_client_redirect_ws { #fold00
 	my ( $heap, $input ) = @_[ HEAP, ARG0 ];
-	    
+	
 	$heap->{ws_frame}->append($input);
-	while (my $message = $heap->{ws_frame}->next_bytes)
-        {
+	my $again=1;
+	while ($again)
+	{
 		#print "forwarder_client_redirect_ws "; my $bytesCSL = ''; foreach my $c (unpack( 'C*', $message )) { $bytesCSL .= sprintf( "%lu", $c )." "; } print ">$bytesCSL\n";
-		exists ( $heap->{wheel_server} ) and $heap->{wheel_server}->put($message);              
+		my $message = $heap->{ws_frame}->next_bytes;
+		if (defined($message))
+		{
+			if (length($message) > 0)
+			{
+				exists ( $heap->{wheel_server} ) and $heap->{wheel_server}->put($message);
+			}
+		}
+		else {$again = 0;}
 	}
-
 }
 
 ######################################################################################
