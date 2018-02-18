@@ -326,7 +326,7 @@ sub forwarder_client_handshake { #fold00
 		{
 			$config->{debug} && print "waiting for full websocket handshake\n";
 			$heap->{ws_handshake} = Protocol::WebSocket::Handshake::Server->new;
-			$heap->{ws_frame}     = Protocol::WebSocket::Frame->new;
+			$heap->{ws_frame}     = Protocol::WebSocket::Frame->new(type => 'binary');
 			$heap->{state} = 'handshake-websocket';
 		}
 		else
@@ -424,7 +424,7 @@ sub forwarder_client_handshake { #fold00
 			return;
 		}
 		
-		$heap->{state} = 'connecting';		
+		$heap->{state} = 'connecting';
 		$heap->{remote_addr} = $wanna_adress.":".$wanna_port;
 		# start connection to forward server
 		$heap->{wheel_server} = POE::Wheel::SocketFactory->new(
@@ -453,12 +453,13 @@ sub forwarder_client_redirect_ws { #fold00
 	my $again=1;
 	while ($again)
 	{
-		#print "forwarder_client_redirect_ws "; my $bytesCSL = ''; foreach my $c (unpack( 'C*', $message )) { $bytesCSL .= sprintf( "%lu", $c )." "; } print ">$bytesCSL\n";
 		my $message = $heap->{ws_frame}->next_bytes;
 		if (defined($message))
-		{
+		{	
 			if (length($message) > 0)
 			{
+				#print "forwarder_client_redirect_ws "; my $bytesCSL = ''; foreach my $c (unpack( 'C*', $message )) { $bytesCSL .= sprintf( "%lu", $c )." "; } print ">$bytesCSL\n";
+				#print "forwarder_client_redirect_ws ".length($message)."\n";
 				exists ( $heap->{wheel_server} ) and $heap->{wheel_server}->put($message);
 			}
 		}
@@ -548,6 +549,7 @@ sub forwarder_stop { #fold00
 sub forwarder_server_redirect { #fold00
 	my ( $heap, $input ) = @_[ HEAP, ARG0 ];
 	#print "-forwarder_server_redirect "; my $bytesCSL = ''; foreach my $c (unpack( 'C*', $input )) { $bytesCSL .= sprintf( "%lu", $c )." "; } print ">$bytesCSL\n";
+	#print "-forwarder_server_redirect ". length $input ."\n";
 	exists( $heap->{wheel_client} ) and $heap->{wheel_client}->put($input);
 }
 
@@ -556,6 +558,7 @@ sub forwarder_server_redirect { #fold00
 sub forwarder_server_redirect_ws { #fold00
 	my ( $heap, $input ) = @_[ HEAP, ARG0 ];
 	#print "-forwarder_server_redirect_ws "; my $bytesCSL = ''; foreach my $c (unpack( 'C*', $input )) { $bytesCSL .= sprintf( "%lu", $c )." "; } print ">$bytesCSL\n";
+	#print "-forwarder_server_redirect_ws ".length($input)."\n";
 	exists( $heap->{wheel_client} ) and $heap->{wheel_client}->put( Protocol::WebSocket::Frame->new(buffer => $input, type => 'binary')->to_bytes );
 }
 
