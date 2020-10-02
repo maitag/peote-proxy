@@ -386,7 +386,9 @@ sub forwarder_client_handshake { #fold00
 			}
 			
 			if (!defined($heap->{'ip_length'}) && length($heap->{pending_ws})>=2) {
-				($heap->{'ip_length'}, $heap->{pending_ws}) = unpack("S1 a*" ,$heap->{pending_ws});
+				#($heap->{'ip_length'}, $heap->{pending_ws}) = unpack("S1 a*" ,$heap->{pending_ws});
+				# since new chunksize comperssing:
+				($heap->{'ip_length'}, $heap->{pending_ws}) = unpack("C1 a*" ,$heap->{pending_ws});
 				if ($heap->{'ip_length'}<3 || $heap->{'ip_length'}>100) {delete $heap->{wheel_client};return;}
 			}						
 			if (defined($heap->{'ip_length'}) && length($heap->{pending_ws})>=2+$heap->{'ip_length'})
