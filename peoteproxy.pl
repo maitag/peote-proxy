@@ -48,9 +48,6 @@ my $config = {
 
 	'allowed_forwards'=>'localhost:23', # comma separated list of allowed forward adresses
 
-	'flash_policy_domain'=>'localhost',
-	'flash_policy_port'=>23,
-
 	'max_connections_per_ip'=>3,
 
 	'logging'=>'on',
@@ -71,8 +68,6 @@ my $config_struct = {
 	'address'=>'(DOMAIN|IP)',
 	'port'=>'(NUMBER)',
 	'allowed_forwards'=>'(ADRESSES)', # comma separated list of allowed forward adresses
-	'flash_policy_domain'=>'(DOMAIN|IP)',
-	'flash_policy_port'=>'(NUMBER)',
 	'max_connections_per_ip'=>'(NUMBER)',
 	'logging'=>['on','off'],
 	'error_logging'=>['on','off'],
@@ -317,12 +312,7 @@ sub forwarder_client_handshake { #fold00
 	if ( $heap->{state} eq 'handshake' )
 	{
 		# check first incomming byte to see whats may going on ;)
-		if ($input =~ /^</)
-		{
-			$config->{debug} && print "waiting for full flash policy request\n";
-			$heap->{state} = 'handshake-flash';
-		}
-		elsif ($input =~ /^G/)
+		if ($input =~ /^G/)
 		{
 			$config->{debug} && print "waiting for full websocket handshake\n";
 			$heap->{ws_handshake} = Protocol::WebSocket::Handshake::Server->new;
@@ -338,23 +328,7 @@ sub forwarder_client_handshake { #fold00
 	
 	##########################################
 	
-	if ( $heap->{state} eq 'handshake-flash' )
-	{
-		if ($heap->{pending} =~ s/^(<policy-file-request\/>\0)//  )
-		{
-			my $policy = '<?xml version="1.0"?>';
-			$policy .= '<!DOCTYPE cross-domain-policy SYSTEM "/xml/dtds/cross-domain-policy.dtd">';
-			$policy .= '<cross-domain-policy>';
-			$policy .= '<site-control permitted-cross-domain-policies="master-only"/>';
-			$policy .= '<allow-access-from domain="'.$config->{'flash_policy_domain'}.'" to-ports="'.$config->{'flash_policy_port'}.'" />';
-			$policy .= '</cross-domain-policy>';
-			$policy .= pack("b",0);
-			log_("[$heap->{log}] Client $heap->{peer_host}:$heap->{peer_port} gets flash policy\n",'ACCESS');
-			exists ( $heap->{wheel_client} ) and $heap->{wheel_client}->put($policy);
-			$heap->{state} = 'wait4ip';
-		}
-	}
-	elsif ( $heap->{state} eq 'handshake-websocket' )
+	if ( $heap->{state} eq 'handshake-websocket' )
 	{
 		$heap->{ws_handshake}->parse($heap->{pending});
 		$config->{debug} && print "pending after parse out for websocket: '".$heap->{pending}."'\n";
@@ -386,8 +360,6 @@ sub forwarder_client_handshake { #fold00
 			}
 			
 			if (!defined($heap->{'ip_length'}) && length($heap->{pending_ws})>=2) {
-				#($heap->{'ip_length'}, $heap->{pending_ws}) = unpack("S1 a*" ,$heap->{pending_ws});
-				# since new chunksize comperssing:
 				($heap->{'ip_length'}, $heap->{pending_ws}) = unpack("C1 a*" ,$heap->{pending_ws});
 				if ($heap->{'ip_length'}<3 || $heap->{'ip_length'}>100) {delete $heap->{wheel_client};return;}
 			}						
@@ -401,8 +373,6 @@ sub forwarder_client_handshake { #fold00
 		else
 		{
 			if (!defined($heap->{'ip_length'}) && length($heap->{pending})>=2) {
-				#($heap->{'ip_length'}, $heap->{pending_ws}) = unpack("S1 a*" ,$heap->{pending_ws});
-				# since new chunksize comperssing:
 				($heap->{'ip_length'}, $heap->{pending}) = unpack("C1 a*" ,$heap->{pending});
 				if ($heap->{'ip_length'}<3 || $heap->{'ip_length'}>100) {delete $heap->{wheel_client};return;}
 			}
