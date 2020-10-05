@@ -10,7 +10,7 @@ to do crossplatform networkcoding with haxe.
 On Linux everything should run out of the box (`apt install perl5 libpoe-perl && cpan Protocol::WebSocket`),
 for Windows i recommend to use [strawberryperl](http://strawberryperl.com/).  
 
-Adjust the peoteproxy.conf file and start it with `perl peoteproxy.pl`!
+Adjust the peote-proxy.conf file and start it with `perl peote-proxy.pl`!
 
 ### Perlmodule dependencies
 

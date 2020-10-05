@@ -26,8 +26,8 @@ BEGIN {
   $pdir = $RealBin;
 }
 
-use constant PID_FILE => "$pdir/peoteproxy.pid";
-use constant CONFIG_FILE => "$pdir/peoteproxy.conf";
+use constant PID_FILE => "$pdir/peote-proxy.pid";
+use constant CONFIG_FILE => "$pdir/peote-proxy.conf";
 
 use lib $pdir;
 use Protocol::WebSocket::Stateful;
@@ -54,9 +54,9 @@ my $config = {
 	'error_logging'=>'on',
 	'access_logging'=>'on',
 
-	'logfile'=>'', #'peoteproxy.log',
-	'error_logfile'=>'', #'peoteproxy_error.log',
-	'access_logfile'=>'', #'peoteproxy_access.log',
+	'logfile'=>'', #'peote-proxy.log',
+	'error_logfile'=>'', #'peote-proxy_error.log',
+	'access_logfile'=>'', #'peote-proxy_access.log',
 	
 	'user'=>'',
 	'daemon'=>'off',
